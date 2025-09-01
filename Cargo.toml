@@ -2,7 +2,7 @@
 name = "ipc_web_monitor"
 version = "0.1.0"
 edition = "2024"
-default-run = "data_hub"
+default-run = "main"
 
 [dependencies]
 tokio = { version = "1.41", features = ["full"] }

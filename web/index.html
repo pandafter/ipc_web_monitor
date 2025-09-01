@@ -15,11 +15,10 @@
   .controls{display:flex;gap:8px}
   input[type="text"]{flex:1;padding:10px;border-radius:8px;border:1px solid #dcdfe6}
   button{background:var(--accent);color:white;border:none;padding:10px 14px;border-radius:8px;cursor:pointer}
-  .widgets{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+  .widgets{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:12px} /* solo 2 widgets ahora */
   .widget{background:#fff;padding:10px;border-radius:8px;text-align:center}
   .small{font-size:0.85rem;color:#666}
   #log{max-height:360px;overflow:auto;font-family:monospace;font-size:0.85rem;white-space:pre-wrap}
-  .row{display:flex;gap:10px}
 </style>
 </head>
 <body>
@@ -43,14 +42,11 @@
             <div class="widget">
               <div class="small">Última latencia</div>
               <div id="lastLatency" style="font-weight:600;font-size:1.3rem">-- µs</div>
+              <div id="lastLatencySeconds" style="font-weight:600;font-size:1.3rem">-- ms</div>
             </div>
             <div class="widget">
               <div class="small">Promedio</div>
               <div id="avgLatency" style="font-weight:600;font-size:1.3rem">-- µs</div>
-            </div>
-            <div class="widget">
-              <div class="small">Conectados</div>
-              <div id="usersCount" style="font-weight:600;font-size:1.3rem">0</div>
             </div>
           </div>
         </div>
@@ -67,6 +63,7 @@
           <h3>Resumen estadístico</h3>
           <div class="small">Mínimo</div>
           <div id="minLatency" style="font-weight:600;font-size:1.1rem">-- µs</div>
+          <div id="minLatencySeconds" style="font-weight:600;font-size:1.1rem">-- ms</div>
           <div style="height:8px"></div>
           <div class="small">Máximo</div>
           <div id="maxLatency" style="font-weight:600;font-size:1.1rem">-- µs</div>
@@ -81,105 +78,88 @@
     </div>
   </div>
 
-<script>
-(function(){
-  const loc = window.location;
-  const wsUrl = `ws://${loc.hostname}:8080/ws`;
-  document.getElementById('hostInfo').textContent = wsUrl;
+  <script>
+  (function(){
+    const loc = window.location;
+    const port = 5050
+    const wsUrl = `ws://${loc.hostname}:${port}/ws`;
+    const ws = new WebSocket(wsUrl);
+    const url = `${loc.hostname}:${port}`;
 
-  const ws = new WebSocket(wsUrl);
-  const sendBtn = document.getElementById('sendBtn');
-  const input = document.getElementById('stimulusInput');
-  const log = document.getElementById('log');
-  const usersCountEl = document.getElementById('usersCount');
-  const lastLatencyEl = document.getElementById('lastLatency');
-  const avgLatencyEl = document.getElementById('avgLatency');
-  const minLatencyEl = document.getElementById('minLatency');
-  const maxLatencyEl = document.getElementById('maxLatency');
-  const wsState = document.getElementById('wsState');
+    const sendBtn = document.getElementById('sendBtn');
+    const input = document.getElementById('stimulusInput');
+    const lastLatencyEl = document.getElementById('lastLatency');
+    const lastLatencySeconds = document.getElementById('lastLatencySeconds');
+    const minLatencyMSeconds = document.getElementById('minLatencySeconds');
+    const avgLatencyEl = document.getElementById('avgLatency');
+    const minLatencyEl = document.getElementById('minLatency');
+    const maxLatencyEl = document.getElementById('maxLatency');
+    const wsState = document.getElementById('wsState');
+    const logEl = document.getElementById('log');
+    const hostInf = document.getElementById('hostInfo')
 
-  let latencies = [];
-  const MAX_LOG = 200;
+    let latencies = [];
+    const sent_map = new Map();
+    const logHistory = [];
 
-  // map que guarda send_ts_us -> send_time_ms (performance.now()) para quien envió,
-  // esto permite calcular RTT solo para el remitente.
-  const sent_map = new Map();
-
-  ws.onopen = () => { wsState.textContent = 'conectado'; };
-  ws.onclose = () => { wsState.textContent = 'desconectado'; };
-  ws.onerror = (e) => { console.warn('WS error', e); };
-
-  ws.onmessage = (ev) => {
-    const raw = ev.data.toString();
-
-    // mensaje de usuarios
-    if(raw.startsWith('USERS:')) {
-      const n = parseInt(raw.split(':')[1]) || 0;
-      usersCountEl.textContent = n;
-      appendLog(raw);
-      return;
+    ws.onopen = () => {
+      wsState.textContent = 'conectado';
+      hostInf.textContent = url;
     }
+    ws.onclose = () => wsState.textContent = 'desconectado';
+    ws.onerror = e => console.warn('WS error', e);
 
-    // INIT message (envía último valor)
-    if(raw.startsWith('INIT:')) {
-      appendLog(raw);
-      return;
-    }
+    ws.onmessage = ev => {
+      const msg = ev.data.toString();
 
-    // normal: "<send_ts_us>|<payload>|recv_ts:<server_ts>"
-    const parts = raw.split('|');
-    // si primera parte es un número lo interpretamos como send_ts_us
-    const maybeSend = parseInt(parts[0]);
-    const hasSend = !isNaN(maybeSend) && maybeSend > 0;
+      if(msg.startsWith('INIT:')) {
+        const payload = msg.slice(5);
+        if(!logHistory.includes(payload)) {
+          logHistory.push(msg);
+        }
+      } else {
+        const parts = msg.split('|');
+        const maybeSend = parseInt(parts[0]);
 
-    if(hasSend) {
-      // si yo fui el que mandó ese send_ts, calcular RTT
-      if(sent_map.has(String(maybeSend))) {
-        const send_perf_ms = sent_map.get(String(maybeSend)); // ms (performance.now)
-        const now_perf_ms = performance.now();
-        const rtt_ms = now_perf_ms - send_perf_ms;
-        const rtt_us = Math.round(rtt_ms * 1000);
-        // registrar
-        latencies.push(rtt_us);
-        if(latencies.length > 10000) latencies.shift();
-        lastLatencyEl.textContent = `${rtt_us} µs`;
-        const avg = Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length);
-        avgLatencyEl.textContent = `${avg} µs`;
-        minLatencyEl.textContent = `${Math.min(...latencies)} µs`;
-        maxLatencyEl.textContent = `${Math.max(...latencies)} µs`;
+        if(!isNaN(maybeSend) && sent_map.has(String(maybeSend))) {
+          const send_perf_ms = sent_map.get(String(maybeSend));
+          const rtt_us = Math.round((performance.now() - send_perf_ms) * 1000);
 
-        // eliminar de map para no recalcular
-        sent_map.delete(String(maybeSend));
+          latencies.push(rtt_us);
+          if(latencies.length > 10000) latencies.shift();
+
+          lastLatencyEl.textContent = `${rtt_us} µs`;
+          lastLatencySeconds.textContent = `${rtt_us*(10**-6)} s`
+          const avg = Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length);
+          avgLatencyEl.textContent = `${avg} µs`;
+          minLatencyEl.textContent = `${Math.min(...latencies)} µs`;
+          minLatencyMSeconds.textContent = `${(Math.min(...latencies)/1000)} ms`;
+          maxLatencyEl.textContent = `${Math.max(...latencies)} µs`;
+
+          sent_map.delete(String(maybeSend));
+        } else {
+          // mensaje normal, agregar al log
+          logHistory.push(msg);
+        }
       }
-    }
 
-    appendLog(raw);
-  };
+      // mantener solo últimos 200
+      if(logHistory.length > 200) logHistory.shift();
+      logEl.textContent = logHistory.join('\n');
+      logEl.scrollTop = logEl.scrollHeight;
+    };
 
-  function appendLog(s) {
-    const now = new Date().toLocaleTimeString();
-    const line = `${now} | ${s}\n`;
-    log.textContent = line + log.textContent; // prepend
-    const lines = log.textContent.split('\n').filter(Boolean);
-    if(lines.length > MAX_LOG) lines.length = MAX_LOG;
-    log.textContent = lines.join('\n') + '\n';
-  }
 
-  // Enviar solo al hacer click
-  sendBtn.addEventListener('click', () => {
-    const value = input.value.trim();
-    if(!value) return;
-    // send_ts basado en performance.now() en µs
-    const send_perf_ms = performance.now();
-    const send_ts_us = Math.floor(send_perf_ms * 1000);
-    const msg = `${send_ts_us}|${value}`;
-    // guardar map para calcular RTT cuando llegue eco
-    sent_map.set(String(send_ts_us), send_perf_ms);
-    ws.send(msg);
-    input.value = '';
-    appendLog(`(sent) ${msg}`);
-  });
-})();
-</script>
+
+    sendBtn.addEventListener('click', () => {
+      const value = input.value.trim() || 'ping';
+      const send_perf_ms = performance.now();
+      const send_ts_us = Math.floor(send_perf_ms*1000);
+      const msg = `${send_ts_us}|${value}`;
+      sent_map.set(String(send_ts_us), send_perf_ms);
+      ws.send(msg);
+    });
+  })();
+  </script>
 </body>
 </html>
